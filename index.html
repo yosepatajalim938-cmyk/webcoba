@@ -1544,52 +1544,44 @@
 
                     // Logos from Supabase Storage
                     if (supabase) {
-                        const storageUrl = supabase.storage.from('logos').getPublicUrl;
+                        const buckets = ['logo_kiri', 'logo_kanan', 'logo_watermark'];
+                        buckets.forEach(key => {
+                            if (c[key]) {
+                                const { data: { publicUrl } } = supabase.storage.from('logos').getPublicUrl(c[key]);
 
-                        if (c.logo_kiri) {
-                            const { data: { publicUrl } } = storageUrl('logo_kiri');
-                            const previewImg = document.getElementById('logo-kiri');
-                            if (previewImg) {
-                                previewImg.src = publicUrl;
-                                previewImg.style.display = 'block';
+                                if (key === 'logo_kiri') {
+                                    const previewImg = document.getElementById('logo-kiri');
+                                    if (previewImg) { previewImg.src = publicUrl; previewImg.style.display = 'block'; }
+                                    const masterImg = document.getElementById('master-logo-kiri');
+                                    if (masterImg) {
+                                        masterImg.src = publicUrl;
+                                        masterImg.style.display = 'block';
+                                        const placeholder = document.getElementById('placeholder-kiri');
+                                        if (placeholder) placeholder.style.display = 'none';
+                                    }
+                                } else if (key === 'logo_kanan') {
+                                    const previewImg = document.getElementById('logo-kanan');
+                                    if (previewImg) { previewImg.src = publicUrl; previewImg.style.display = 'block'; }
+                                    const masterImg = document.getElementById('master-logo-kanan');
+                                    if (masterImg) {
+                                        masterImg.src = publicUrl;
+                                        masterImg.style.display = 'block';
+                                        const placeholder = document.getElementById('placeholder-kanan');
+                                        if (placeholder) placeholder.style.display = 'none';
+                                    }
+                                } else if (key === 'logo_watermark') {
+                                    const masterImg = document.getElementById('master-logo-watermark');
+                                    if (masterImg) {
+                                        masterImg.src = publicUrl;
+                                        masterImg.style.display = 'block';
+                                        const placeholder = document.getElementById('placeholder-watermark');
+                                        if (placeholder) placeholder.style.display = 'none';
+                                    }
+                                    const printWatermark = document.getElementById('print-watermark');
+                                    if (printWatermark) printWatermark.src = publicUrl;
+                                }
                             }
-                            const masterImg = document.getElementById('master-logo-kiri');
-                            if (masterImg) {
-                                masterImg.src = publicUrl;
-                                masterImg.style.display = 'block';
-                                const placeholder = document.getElementById('placeholder-kiri');
-                                if (placeholder) placeholder.style.display = 'none';
-                            }
-                        }
-
-                        if (c.logo_kanan) {
-                            const { data: { publicUrl } } = storageUrl('logo_kanan');
-                            const previewImg = document.getElementById('logo-kanan');
-                            if (previewImg) {
-                                previewImg.src = publicUrl;
-                                previewImg.style.display = 'block';
-                            }
-                            const masterImg = document.getElementById('master-logo-kanan');
-                            if (masterImg) {
-                                masterImg.src = publicUrl;
-                                masterImg.style.display = 'block';
-                                const placeholder = document.getElementById('placeholder-kanan');
-                                if (placeholder) placeholder.style.display = 'none';
-                            }
-                        }
-
-                        if (c.logo_watermark) {
-                            const { data: { publicUrl } } = storageUrl('logo_watermark');
-                            const masterImg = document.getElementById('master-logo-watermark');
-                            if (masterImg) {
-                                masterImg.src = publicUrl;
-                                masterImg.style.display = 'block';
-                                const placeholder = document.getElementById('placeholder-watermark');
-                                if (placeholder) placeholder.style.display = 'none';
-                            }
-                            const printWatermark = document.getElementById('print-watermark');
-                            if (printWatermark) printWatermark.src = publicUrl;
-                        }
+                        });
                     }
 
                     // Watermark state
@@ -2023,19 +2015,25 @@
             showLoading('Memperbarui Konfigurasi Sekolah...');
 
             try {
-                // Delete existing config and insert new
-                await supabase.from('config').delete().neq('key', '');
+                // Use upsert – if 'key' is PK it works, otherwise it might fail with same error
+                // We'll try a safer approach: update one by one or just use simple upsert
+                const promises = Object.keys(obj).map(k =>
+                    supabase.from('config').upsert({ key: k, value: obj[k] })
+                );
 
-                const configRows = Object.keys(obj).map(key => ({
-                    key: key,
-                    value: obj[key]
-                }));
+                const results = await Promise.all(promises);
+                const errors = results.filter(r => r.error).map(r => r.error.message);
 
-                const { error } = await supabase.from('config').insert(configRows);
-                if (error) throw error;
+                if (errors.length > 0) {
+                    // If it's the "no unique constraint" error, we'll try to explain
+                    if (errors[0].includes('unique or exclusion constraint')) {
+                        throw new Error('Tabel "config" tidak memiliki Primary Key pada kolom "key". Silakan cek menu "Cek Koneksi" untuk solusinya.');
+                    }
+                    throw new Error(errors[0]);
+                }
 
                 closeModal('modal-sekolah');
-                app.loadConfig();
+                await app.loadConfig();
                 showToast('Konfigurasi Sekolah Berhasil Diperbarui!');
             } catch (err) {
                 showToast('Gagal: ' + err.message, 'error');
@@ -2257,27 +2255,54 @@
         async function checkDatabaseConnection() {
             showLoading('Mengecek Koneksi Supabase...');
             try {
+                // Check Tables
                 const { count, error } = await supabase.from('siswa').select('*', { count: 'exact', head: true });
+
+                // Check Storage Buckets
+                const { data: buckets, error: storageError } = await supabase.storage.listBuckets();
 
                 const modal = document.getElementById('modal-debug');
                 const content = document.getElementById('debug-content');
 
                 if (modal && content) {
                     modal.classList.remove('hidden');
-                    if (!error) {
-                        content.innerHTML = `<strong>Koneksi Sukses!</strong>
-Connected to: ${SUPABASE_URL}
-Status: Online
-Waktu Cek: ${new Date().toLocaleString()}`;
-                    } else {
-                        content.innerHTML = `<strong style="color:red">Koneksi Gagal!</strong>
-Error: ${error.message}`;
+                    let html = `<strong>Koneksi Database: ${error ? '<span style="color:red">Gagal</span>' : '<span style="color:green">Sukses</span>'}</strong>\n`;
+                    html += `URL: ${SUPABASE_URL}\n`;
+                    html += `Tabel Siswa: ${error ? error.message : 'Ditemukan (' + count + ' data)'}\n\n`;
+
+                    html += `<strong>Koneksi Storage: ${storageError ? '<span style="color:red">Gagal</span>' : '<span style="color:green">Sukses</span>'}</strong>\n`;
+                    if (buckets) {
+                        const requiredBuckets = ['logos', 'arsip'];
+                        requiredBuckets.forEach(b => {
+                            const found = buckets.find(bucket => bucket.name === b);
+                            html += `Bucket "${b}": ${found ? '<span style="color:green">Ready</span>' : '<span style="color:red">Tidak Ditemukan</span>'}\n`;
+                        });
+                        html += `\n<div style="font-size:0.8rem; color: #666; background: #fffbe6; padding: 12px; border-radius: 8px; border: 1px solid #ffe58f; margin-top: 10px;">
+                            <strong style="color: #856404;">⚠️ SOLUSI ERROR:</strong><br>
+                            <ol style="margin-left: 15px; margin-top: 5px;">
+                                <li><strong>Bucket Not Found:</strong> Buka <i>Storage</i> di Dashbord Supabase, klik <i>"New Bucket"</i>, buat bucket bernama <b>"logos"</b> dan <b>"arsip"</b>, lalu atur ke <b>Public</b>.</li>
+                                <li><strong>Unique Constraint Error:</strong> Jalankan SQL ini di <i>SQL Editor</i> Supabase:<br>
+                                <code style="display:block; background:#eee; padding:5px; margin-top:5px; font-size:0.75rem;">
+-- Hapus PK lama dan jadikan "key" sebagai PK baru<br>
+ALTER TABLE config DROP CONSTRAINT IF EXISTS config_pkey;<br>
+ALTER TABLE config ADD PRIMARY KEY (key);<br>
+<br>
+-- Pastikan NISN unik<br>
+ALTER TABLE siswa DROP CONSTRAINT IF EXISTS unique_nisn;<br>
+ALTER TABLE siswa ADD CONSTRAINT unique_nisn UNIQUE (nisn);
+                                </code></li>
+                            </ol>
+                        </div>`;
+                    } else if (storageError) {
+                        html += `Error: ${storageError.message}\n`;
                     }
+
+                    html += `\nWaktu Cek: ${new Date().toLocaleString()}`;
+                    content.innerHTML = html;
                 }
             } catch (err) {
                 const content = document.getElementById('debug-content');
-                if (content) content.innerHTML = `<strong style="color:red">Error!</strong>
-${err.message}`;
+                if (content) content.innerHTML = `<strong style="color:red">Error Fatal!</strong>\n${err.message}`;
             } finally {
                 hideLoading();
             }
@@ -2286,28 +2311,41 @@ ${err.message}`;
         // ============================================
         // OCR & PRINT
         // ============================================
-        let currentOCRData = null;
+        let currentOCRResults = []; // Array of student data objects
 
         async function processIjasahOCR(input) {
             if (!input.files || !input.files[0]) return;
             const file = input.files[0];
             showLoading('Menganalisis Dokumen...');
+            currentOCRResults = [];
+
             try {
-                let imageSource = file;
                 if (file.type === 'application/pdf') {
-                    document.querySelector('.loading-text').innerText = 'Memproses Halaman PDF...';
                     const arrayBuffer = await file.arrayBuffer();
                     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-                    const page = await pdf.getPage(1);
-                    const viewport = page.getViewport({ scale: 2.0 });
-                    const canvas = document.createElement('canvas');
-                    const context = canvas.getContext('2d');
-                    canvas.height = viewport.height;
-                    canvas.width = viewport.width;
-                    await page.render({ canvasContext: context, viewport: viewport }).promise;
-                    imageSource = canvas.toDataURL('image/jpeg');
+                    const numPages = pdf.numPages;
+
+                    for (let i = 1; i <= numPages; i++) {
+                        document.querySelector('.loading-text').innerText = `Memproses Halaman ${i} dari ${numPages}...`;
+                        const page = await pdf.getPage(i);
+                        const viewport = page.getViewport({ scale: 2.0 });
+                        const canvas = document.createElement('canvas');
+                        const context = canvas.getContext('2d');
+                        canvas.height = viewport.height;
+                        canvas.width = viewport.width;
+                        await page.render({ canvasContext: context, viewport: viewport }).promise;
+
+                        const text = await runOcrOnImage(canvas.toDataURL('image/jpeg'));
+                        if (text && (text.nama_siswa !== 'Tidak terdeteksi' || text.no_ijasah !== 'Tidak terdeteksi')) {
+                            currentOCRResults.push(text);
+                        }
+                    }
+                } else {
+                    // Image file
+                    const text = await runOcrOnImage(file);
+                    if (text) currentOCRResults.push(text);
                 }
-                currentOCRData = await runOcrOnImage(imageSource);
+
                 renderOCRResults();
                 hideLoading();
             } catch (error) {
@@ -2389,63 +2427,93 @@ ${err.message}`;
             const container = document.getElementById('ocr-results-container');
             const body = document.getElementById('ocr-results-body');
             container.classList.remove('hidden');
-            if (!currentOCRData) {
-                body.innerHTML = '<tr><td colspan="3" style="text-align:center">Tidak ada data.</td></tr>';
+
+            if (currentOCRResults.length === 0) {
+                body.innerHTML = '<tr><td colspan="3" style="text-align:center">Tidak ada data terdeteksi. Silakan upload file yang lebih jelas.</td></tr>';
                 return;
             }
-            const fields = [
-                { key: 'nama_siswa', label: 'Nama Siswa' },
-                { key: 'no_ijasah', label: 'No. Ijazah' },
-                { key: 'ttl', label: 'Tempat, Tgl Lahir' },
-                { key: 'nisn', label: 'NISN' }
-            ];
-            body.innerHTML = fields.map(f => `
-  <tr>
-    <td style="font-weight: 600; width: 30%;">${f.label}</td>
-    <td>
-      <input type="text" class="form-input"
-        value="${currentOCRData[f.key] || ''}"
-        onchange="updateOCRLocal('${f.key}', this.value)">
-    </td>
-    <td style="width: 15%; text-align: center;">
-      <span class="badge ${(!currentOCRData[f.key] || currentOCRData[f.key] === 'Tidak terdeteksi') ? 'badge-danger' : 'badge-success'}">
-        ${(!currentOCRData[f.key] || currentOCRData[f.key] === 'Tidak terdeteksi') ? 'Cek' : 'OK'}
-      </span>
-    </td>
-  </tr>
-  `).join('');
+
+            body.innerHTML = currentOCRResults.map((res, index) => {
+                const isCheck = (res.nama_siswa === 'Tidak terdeteksi' || res.no_ijasah === 'Tidak terdeteksi');
+                return `
+                    <tr style="border-bottom: 2px solid #e2e8f0;">
+                        <td colspan="3" style="padding: 0;">
+                            <table style="width: 100%; border-collapse: collapse;">
+                                <tr>
+                                    <td style="width: 30%; font-weight: 600; background: #f8fafc;">Nama Siswa</td>
+                                    <td><input type="text" class="form-input" value="${res.nama_siswa}" onchange="updateOCRLocal(${index}, 'nama_siswa', this.value)"></td>
+                                    <td style="width: 15%; text-align: center;">
+                                        <span class="badge ${res.nama_siswa === 'Tidak terdeteksi' ? 'badge-danger' : 'badge-success'}">${res.nama_siswa === 'Tidak terdeteksi' ? 'Cek' : 'OK'}</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">No. Ijazah</td>
+                                    <td><input type="text" class="form-input" value="${res.no_ijasah}" onchange="updateOCRLocal(${index}, 'no_ijasah', this.value)"></td>
+                                    <td style="text-align: center;">
+                                        <span class="badge ${res.no_ijasah === 'Tidak terdeteksi' ? 'badge-danger' : 'badge-success'}">${res.no_ijasah === 'Tidak terdeteksi' ? 'Cek' : 'OK'}</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">TTL</td>
+                                    <td><input type="text" class="form-input" value="${res.ttl}" onchange="updateOCRLocal(${index}, 'ttl', this.value)"></td>
+                                    <td style="text-align: center;">
+                                        <span class="badge ${res.ttl === 'Tidak terdeteksi' ? 'badge-danger' : 'badge-success'}">${res.ttl === 'Tidak terdeteksi' ? 'Cek' : 'OK'}</span>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="font-weight: 600; background: #f8fafc;">NISN</td>
+                                    <td><input type="text" class="form-input" value="${res.nisn}" onchange="updateOCRLocal(${index}, 'nisn', this.value)"></td>
+                                    <td style="text-align: center;">
+                                        <span class="badge ${res.nisn === 'Tidak terdeteksi' ? 'badge-danger' : 'badge-success'}">${res.nisn === 'Tidak terdeteksi' ? 'Cek' : 'OK'}</span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
         }
 
-        function updateOCRLocal(key, val) {
-            if (currentOCRData) {
-                currentOCRData[key] = val;
+        function updateOCRLocal(index, key, val) {
+            if (currentOCRResults[index]) {
+                currentOCRResults[index][key] = val;
             }
         }
 
         function resetOCR() {
-            currentOCRData = null;
+            currentOCRResults = [];
             document.getElementById('ocr-results-container').classList.add('hidden');
             document.getElementById('ocr-upload-input').value = "";
         }
 
         async function saveOCRResult() {
-            if (!currentOCRData) return;
-            if (currentOCRData.nama_siswa === 'Tidak terdeteksi' || currentOCRData.nama_siswa === 'Error') {
-                if (!confirm("Nama siswa belum terdeteksi sempurna. Tetap simpan?")) return;
+            if (currentOCRResults.length === 0) return;
+
+            const hasIncomplete = currentOCRResults.some(r => r.nama_siswa === 'Tidak terdeteksi' || r.nama_siswa === 'Error');
+            if (hasIncomplete) {
+                if (!confirm("Beberapa nama siswa belum terdeteksi sempurna. Tetap simpan?")) return;
             }
-            showLoading('Menyimpan Data...');
+
+            showLoading(`Menyimpan ${currentOCRResults.length} Data...`);
             try {
-                const { data, error } = await supabase.from('siswa').upsert({
-                    nama_lengkap: currentOCRData.nama_siswa,
-                    no_ijasah: currentOCRData.no_ijasah,
-                    nisn: currentOCRData.nisn,
-                    tempat_lahir: currentOCRData.ttl.split(',')[0] || '',
-                    tanggal_lahir: currentOCRData.ttl.split(',')[1] || ''
-                }).select();
+                // Since there's no unique constraint on NISN yet, 
+                // we'll try to insert them. If they want to update, they need the unique constraint.
+                const { error } = await supabase.from('siswa').insert(currentOCRResults.map(res => ({
+                    nama_lengkap: res.nama_siswa,
+                    no_ijasah: res.no_ijasah,
+                    nisn: res.nisn,
+                    tempat_lahir: res.ttl.split(',')[0] || '',
+                    tanggal_lahir: res.ttl.split(',')[1] || ''
+                })));
 
-                if (error) throw error;
+                if (error) {
+                    if (error.message.includes('unique or exclusion constraint')) {
+                        throw new Error('Gagal Simpan: Kolom NISN harus unik. Jalankan SQL di menu "Cek Koneksi".');
+                    }
+                    throw error;
+                }
 
-                showToast(`Data Siswa Berhasil Disimpan!`);
+                showToast(`${currentOCRResults.length} Data Siswa Berhasil Disimpan!`);
                 resetOCR();
                 loadSiswaData(true);
             } catch (err) {
